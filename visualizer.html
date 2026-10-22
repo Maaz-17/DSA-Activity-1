@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Infix to Postfix Visualizer</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#ffffff; --text:#1d2330; --muted:#6a7385; --line:#d8dce5;
+          --blue:#2f6fed; --stack:#fff1de; --stackline:#d9822b; --out:#dff4e7; --outline:#2e9a5a; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0e1320; --card:#171e2f; --text:#e8ecf5; --muted:#9aa5bd; --line:#2d374d;
+            --blue:#6c9bff; --stack:#3d2c17; --stackline:#f0a257; --out:#18382a; --outline:#5fd18e; }
+  }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:Arial, Helvetica, sans-serif; line-height:1.5; }
+  .page { max-width:820px; margin:0 auto; padding:20px 16px 40px; }
+  h1 { text-align:center; color:var(--blue); margin-bottom:0; }
+  .sub { text-align:center; color:var(--muted); margin-top:4px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; margin-top:14px; }
+  h2 { font-size:15px; margin:0 0 10px; }
+  input { width:100%; box-sizing:border-box; padding:10px; font-size:16px; font-family:monospace;
+          border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--text); }
+  button { padding:8px 16px; margin:10px 6px 0 0; border:1px solid var(--line); border-radius:6px;
+           background:var(--card); color:var(--text); font-size:14px; cursor:pointer; }
+  button.main { background:var(--blue); border-color:var(--blue); color:#fff; }
+  button:disabled { opacity:0.4; cursor:default; }
+  .boxes { display:flex; flex-wrap:wrap; gap:6px; min-height:40px; align-items:center; }
+  .box { font-family:monospace; font-size:17px; padding:6px 12px; border-radius:6px; border:1px solid var(--line); }
+  .box.current { background:var(--blue); color:#fff; border-color:var(--blue); }
+  .box.stack { background:var(--stack); border:2px solid var(--stackline); }
+  .box.out { background:var(--out); border:2px solid var(--outline); }
+  .stackbox { display:flex; flex-direction:column; gap:6px; align-items:center; min-height:60px; }
+  .tag { font-size:11px; color:var(--muted); }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { border:1px solid var(--line); padding:6px 8px; text-align:left; }
+  th { background:var(--bg); }
+  tr.now td { background:var(--out); }
+  .mono { font-family:monospace; }
+  #result { font-size:22px; font-weight:bold; color:var(--outline); }
+  #error { color:#d93a3a; font-weight:bold; }
+  .small { color:var(--muted); font-size:13px; }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>Infix to Postfix Visualizer</h1>
+  <p class="sub">Stack-based conversion, one step at a time</p>
+
+  <div class="card">
+    <h2>Enter infix expression</h2>
+    <input id="expr" value="A + B * (C - D)^E / F" spellcheck="false">
+    <button class="main" onclick="convert()">Convert</button>
+    <button onclick="loadExample()">Load Example</button>
+    <button onclick="clearAll()">Clear</button>
+    <div id="error"></div>
+  </div>
+
+  <div id="view" style="display:none">
+    <div class="card">
+      <h2>Tokens (current token is highlighted)</h2>
+      <div class="boxes" id="tokens"></div>
+    </div>
+
+    <div class="card">
+      <h2>Stack Visualization</h2>
+      <div class="small">TOP is shown first.</div>
+      <div class="stackbox" id="stack"></div>
+    </div>
+
+    <div class="card">
+      <h2>Postfix Output</h2>
+      <div class="boxes" id="output"></div>
+      <p id="result"></p>
+    </div>
+
+    <div class="card">
+      <h2>Execution Steps</h2>
+      <table>
+        <thead><tr><th>Step</th><th>Token</th><th>Operation</th><th>Stack (bottom → top)</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <button onclick="move(-1)" id="prev">Previous</button>
+      <button onclick="move(1)" id="next" class="main">Next</button>
+      <button onclick="showAll()">Show All</button>
+      <span class="small" id="counter"></span>
+    </div>
+
+    <div class="card">
+      <h2>Rules used</h2>
+      <p class="small">Precedence: <b>^</b> (3, right-associative) &gt; <b>* /</b> (2) &gt; <b>+ -</b> (1).
+      Operands go straight to the output. "(" is pushed. ")" pops until "(". An operator first pops
+      higher-precedence operators (and equal ones if left-associative), then is pushed.</p>
+      <p class="small">Complexity: each token is pushed and popped at most once, so time is <b>O(n)</b> and space is <b>O(n)</b>.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+var PRECEDENCE = { "+": 1, "-": 1, "*": 2, "/": 2, "^": 3 };
+var tokens = [];
+var steps = [];      // every step stores: token index, operation text, stack, output
+var current = 0;
+
+function shouldPop(top, op) {
+  if (top === "(") return false;
+  if (PRECEDENCE[top] > PRECEDENCE[op]) return true;
+  if (PRECEDENCE[top] === PRECEDENCE[op] && op !== "^") return true;   // ^ is right-associative
+  return false;
+}
+
+function tokenize(text) {
+  var found = text.match(/[A-Za-z_]\w*|\d+(?:\.\d+)?|[-+*/^()]/g) || [];
+  if (found.join("") !== text.replace(/\s+/g, "")) throw new Error("Invalid character in expression");
+  return found;
+}
+
+// Run the conversion and record a step after every token
+function buildSteps(list) {
+  var stack = [], output = [], result = [];
+  result.push({ index: -1, operation: "Stack initialized", stack: [], output: [] });
+
+  function record(i, text) {
+    result.push({ index: i, operation: text, stack: stack.slice(), output: output.slice() });
+  }
+
+  for (var i = 0; i < list.length; i++) {
+    var t = list[i];
+    if (t === "(") {
+      stack.push(t);
+      record(i, "Push ( onto the stack");
+    } else if (t === ")") {
+      var moved = [];
+      while (stack.length > 0 && stack[stack.length - 1] !== "(") {
+        var x = stack.pop(); output.push(x); moved.push(x);
+      }
+      if (stack.length === 0) throw new Error("Mismatched parentheses");
+      stack.pop();
+      record(i, "Pop until ( : moved " + (moved.join(" ") || "nothing") + " to output, removed (");
+    } else if (PRECEDENCE[t]) {
+      var popped = [];
+      while (stack.length > 0 && shouldPop(stack[stack.length - 1], t)) {
+        var y = stack.pop(); output.push(y); popped.push(y);
+      }
+      stack.push(t);
+      record(i, (popped.length ? "Pop " + popped.join(" ") + " to output, then push " : "Push ") + t);
+    } else {
+      output.push(t);
+      record(i, "Operand: send " + t + " to output");
+    }
+  }
+
+  var rest = [];
+  while (stack.length > 0) {
+    var z = stack.pop();
+    if (z === "(") throw new Error("Mismatched parentheses");
+    output.push(z); rest.push(z);
+  }
+  record(list.length, "End: pop remaining operators " + (rest.join(" ") || "(none)"));
+  return result;
+}
+
+// ----- drawing -----
+function makeBox(text, cls) {
+  var d = document.createElement("span");
+  d.className = "box " + cls;
+  d.textContent = text;
+  return d;
+}
+
+function draw() {
+  var s = steps[current];
+
+  var tokenDiv = document.getElementById("tokens");
+  tokenDiv.innerHTML = "";
+  tokens.forEach(function (t, i) { tokenDiv.appendChild(makeBox(t, i === s.index ? "current" : "")); });
+
+  var stackDiv = document.getElementById("stack");
+  stackDiv.innerHTML = "";
+  if (s.stack.length === 0) stackDiv.textContent = "(empty)";
+  for (var i = s.stack.length - 1; i >= 0; i--) {
+    var b = makeBox(s.stack[i], "stack");
+    if (i === s.stack.length - 1) b.textContent += "   ← TOP";
+    stackDiv.appendChild(b);
+  }
+
+  var outDiv = document.getElementById("output");
+  outDiv.innerHTML = "";
+  if (s.output.length === 0) outDiv.textContent = "(empty)";
+  s.output.forEach(function (t) { outDiv.appendChild(makeBox(t, "out")); });
+
+  var last = current === steps.length - 1;
+  document.getElementById("result").textContent = last ? "Postfix: " + s.output.join(" ") : "";
+
+  var rows = document.getElementById("rows");
+  rows.innerHTML = "";
+  for (var k = 0; k <= current; k++) {
+    var st = steps[k];
+    var tr = document.createElement("tr");
+    if (k === current) tr.className = "now";
+    var cells = [k + 1, k === 0 ? "Start" : (st.index < tokens.length ? tokens[st.index] : "end"),
+                 st.operation, st.stack.join(" ") || "Empty"];
+    cells.forEach(function (c, n) {
+      var td = document.createElement("td");
+      td.textContent = c;
+      if (n === 1 || n === 3) td.className = "mono";
+      tr.appendChild(td);
+    });
+    rows.appendChild(tr);
+  }
+
+  document.getElementById("prev").disabled = current === 0;
+  document.getElementById("next").disabled = last;
+  document.getElementById("counter").textContent = "  Step " + (current + 1) + " of " + steps.length;
+}
+
+// ----- buttons -----
+function convert() {
+  var error = document.getElementById("error");
+  error.textContent = "";
+  try {
+    var text = document.getElementById("expr").value;
+    if (text.trim() === "") throw new Error("Expression cannot be empty");
+    tokens = tokenize(text);
+    steps = buildSteps(tokens);
+    current = 0;
+    document.getElementById("view").style.display = "block";
+    draw();
+  } catch (e) {
+    document.getElementById("view").style.display = "none";
+    error.textContent = "Error: " + e.message;
+  }
+}
+function move(n) { current = Math.max(0, Math.min(steps.length - 1, current + n)); draw(); }
+function showAll() { current = steps.length - 1; draw(); }
+function loadExample() { document.getElementById("expr").value = "A + B * (C - D)^E / F"; convert(); }
+function clearAll() {
+  document.getElementById("expr").value = "";
+  document.getElementById("error").textContent = "";
+  document.getElementById("view").style.display = "none";
+}
+document.getElementById("expr").addEventListener("keydown", function (e) { if (e.key === "Enter") convert(); });
+convert();
+</script>
+</body>
+</html>
